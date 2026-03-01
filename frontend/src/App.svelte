@@ -1,37 +1,55 @@
 <script lang="ts">
     import logo from './assets/images/logo-universal.png'
+    import { JoinRoom, Disconnect } from '../wailsjs/go/main/App.js'
+    import { EventsOn } from '../wailsjs/runtime/runtime.js'
+    import { onMount } from 'svelte';
     
     // Variables de estado para la conexion
     let roomID: string = "";
     let clientID: string = "";
     let connectionStatus: string = "Desconectado";
     let isConnected: boolean = false;
+    let lastClipboardContent: string = "(Esperando sincronizacion...)";
 
-    // Funcion para intentar unirse a una sala
-    // Por ahora solo cambia el estado visual, la logica de Go se integrara en el siguiente paso.
+    // Configurar listeners de eventos al montar el componente
+    onMount(() => {
+        EventsOn("clipboard_update", (payload: string) => {
+            lastClipboardContent = payload;
+            console.log("Nueva actualizacion de portapapeles:", payload);
+        });
+
+        EventsOn("room_disconnected", (msg: string) => {
+            isConnected = false;
+            connectionStatus = "Desconectado: " + msg;
+        });
+    });
+
+    // Funcion para intentar unirse a una sala real
     function handleJoinRoom(): void {
         if (!roomID || !clientID) {
             alert("Por favor completa ambos campos para continuar.");
             return;
         }
         
-        // Simulacion de inicio de conexion
         connectionStatus = "Conectando...";
         
-        // TODO: Invocar funcion de Go para establecer el WebSocket
-        console.log(`Intentando unirse a sala: ${roomID} con ID: ${clientID}`);
-        
-        // Simulacion de exito (temporal para v0.1.x)
-        setTimeout(() => {
-            isConnected = true;
-            connectionStatus = `Conectado a la sala: ${roomID}`;
-        }, 500);
+        JoinRoom(roomID, clientID).then(result => {
+            if (result === "OK") {
+                isConnected = true;
+                connectionStatus = `Conectado a la sala: ${roomID}`;
+            } else {
+                connectionStatus = "Error: " + result;
+                isConnected = false;
+            }
+        });
     }
 
     // Funcion para desconectarse
     function handleDisconnect(): void {
-        isConnected = false;
-        connectionStatus = "Desconectado";
+        Disconnect().then(() => {
+            isConnected = false;
+            connectionStatus = "Desconectado";
+        });
     }
 </script>
 
@@ -72,7 +90,11 @@
         </div>
     {:else}
         <div class="active-session">
-            <p>Sincronizando portapapeles en tiempo real...</p>
+            <h3>Sincronizacion Activa</h3>
+            <div class="clipboard-preview">
+                <strong>Ultimo contenido recibido:</strong>
+                <p>{lastClipboardContent}</p>
+            </div>
             <button class="btn-danger" on:click={handleDisconnect}>
                 Abandonar Sala
             </button>
@@ -87,18 +109,19 @@
         align-items: center;
         padding: 2rem;
         font-family: 'Nunito', sans-serif;
+        text-align: center;
     }
 
     #logo {
-        width: 120px;
-        margin-bottom: 1.5rem;
+        width: 100px;
+        margin-bottom: 1rem;
     }
 
     .status-badge {
         padding: 0.5rem 1rem;
         border-radius: 20px;
-        font-size: 0.9rem;
-        margin-bottom: 2rem;
+        font-size: 0.8rem;
+        margin-bottom: 1.5rem;
         font-weight: bold;
     }
 
@@ -123,49 +146,52 @@
     .input-group {
         display: flex;
         flex-direction: column;
-        gap: 0.5rem;
+        gap: 0.4rem;
         text-align: left;
     }
 
     .input-group label {
-        font-size: 0.85rem;
+        font-size: 0.8rem;
         color: #666;
     }
 
     input {
-        padding: 0.8rem;
+        padding: 0.6rem;
         border: 1px solid #ddd;
         border-radius: 6px;
-        font-size: 1rem;
+        font-size: 0.9rem;
     }
 
     .btn-primary {
         background-color: #4a90e2;
         color: white;
         border: none;
-        padding: 0.8rem;
+        padding: 0.7rem;
         border-radius: 6px;
         cursor: pointer;
         font-weight: bold;
-        transition: background 0.2s;
-    }
-
-    .btn-primary:hover {
-        background-color: #357abd;
     }
 
     .btn-danger {
         background-color: #e74c3c;
         color: white;
         border: none;
-        padding: 0.8rem;
+        padding: 0.7rem;
         border-radius: 6px;
         cursor: pointer;
         font-weight: bold;
+        margin-top: 1rem;
     }
 
-    .active-session {
-        text-align: center;
-        margin-top: 2rem;
+    .clipboard-preview {
+        background: #f9f9f9;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px dashed #ccc;
+        margin: 1rem 0;
+        max-width: 400px;
+        word-break: break-all;
     }
+
+    h3 { margin-bottom: 0.5rem; color: #333; }
 </style>
