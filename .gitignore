@@ -1,3 +1,31 @@
-build/bin
-node_modules
-frontend/dist
+# Wails and Go binaries
+/build/bin/
+/build/windows/installer/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Node.js artifacts
+/frontend/node_modules/
+/frontend/dist/
+/frontend/build/
+.npm
+npm-debug.log*
+
+# Wails temporary files
+/frontend/wailsjs/
+
+# Environment and secrets
+.env
+.env.*
+*.local
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
