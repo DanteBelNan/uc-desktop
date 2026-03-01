@@ -5,11 +5,12 @@ import (
     "fmt"
     "log"
     "net/url"
+    "os"
     "sync"
 
+    "golang.design/x/clipboard"
     "github.com/gorilla/websocket"
     "github.com/wailsapp/wails/v2/pkg/runtime"
-    "os"
 )
 
 // Message representa la estructura estandar de mensajes que compartimos con uc-server.
@@ -26,6 +27,7 @@ type App struct {
     mu       sync.Mutex
     roomID   string
     clientID string
+    isJoined bool
 }
 
 // NewApp crea una nueva instancia de la aplicacion de escritorio.
@@ -33,14 +35,17 @@ func NewApp() *App {
     return &App{}
 }
 
-// startup se ejecuta cuando Wails inicia la aplicacion.
+// startup se ejecuta cuando Wails inicia la aplicacion e inicializa el clipboard nativo.
 func (a *App) startup(ctx context.Context) {
     a.ctx = ctx
+    // Inicializar el acceso nativo al portapapeles (necesario en Linux/Cgo)
+    err := clipboard.Init()
+    if err != nil {
+        log.Fatalf("Fallo al inicializar el portapapeles: %v", err)
+    }
 }
 
 // JoinRoom establece una conexion WebSocket con el servidor y se une a una sala.
-// roomID: ID de la sala a la que unirse.
-// clientID: ID unico del dispositivo.
 func (a *App) JoinRoom(roomID string, clientID string) string {
     a.mu.Lock()
     defer a.mu.Unlock()
@@ -49,15 +54,12 @@ func (a *App) JoinRoom(roomID string, clientID string) string {
         return "Ya estas conectado a una sala."
     }
 
-    // Obtener la URL del servidor desde el entorno o usar localhost por defecto
     serverHost := os.Getenv("UC_SERVER_URL")
     if serverHost == "" {
         serverHost = "localhost:8080"
     }
 
     u := url.URL{Scheme: "ws", Host: serverHost, Path: "/ws"}
-    log.Printf("Conectando a %s", u.String())
-
     conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
     if err != nil {
         return fmt.Sprintf("Error al conectar: %v", err)
@@ -66,49 +68,84 @@ func (a *App) JoinRoom(roomID string, clientID string) string {
     a.conn = conn
     a.roomID = roomID
     a.clientID = clientID
+    a.isJoined = true
 
-    // Enviar mensaje JOIN inicial
-    joinMsg := Message{
-        Type:    "JOIN",
-        Payload: roomID,
-        Sender:  clientID,
-    }
+    // Mensaje de union
+    joinMsg := Message{Type: "JOIN", Payload: roomID, Sender: clientID}
     if err := a.conn.WriteJSON(joinMsg); err != nil {
         a.conn.Close()
         a.conn = nil
-        return fmt.Sprintf("Error al unirse a la sala: %v", err)
+        return "Error al unirse"
     }
 
-    // Iniciar la escucha de mensajes en segundo plano
+    // Iniciar servicios asincronos (basados en eventos, no polling)
     go a.listenForMessages()
+    go a.watchLocalClipboard()
 
     return "OK"
 }
 
-// listenForMessages escucha continuamente actualizaciones del servidor.
+// watchLocalClipboard utiliza un canal nativo para detectar cambios en el portapapeles.
+// Esto elimina el "polling" y el parpadeo de foco en sistemas Linux.
+func (a *App) watchLocalClipboard() {
+    // Escuchar solo cambios de texto plano (UTF-8)
+    ch := clipboard.Watch(context.Background(), clipboard.FmtText)
+    
+    for data := range ch {
+        a.mu.Lock()
+        if !a.isJoined || a.conn == nil {
+            a.mu.Unlock()
+            break
+        }
+        
+        content := string(data)
+        if content != "" {
+            log.Printf("Cambio detectado nativamente. Enviando...")
+            updateMsg := Message{
+                Type:    "UPDATE",
+                Payload: content,
+                Sender:  a.clientID,
+            }
+            err := a.conn.WriteJSON(updateMsg)
+            if err != nil {
+                log.Printf("Error al enviar actualizacion: %v", err)
+            }
+        }
+        a.mu.Unlock()
+    }
+}
+
+// listenForMessages escucha continuamente actualizaciones del servidor central.
 func (a *App) listenForMessages() {
     for {
         var msg Message
-        err := a.conn.ReadJSON(&msg)
+        a.mu.Lock()
+        conn := a.conn
+        if conn == nil {
+            a.mu.Unlock()
+            break
+        }
+        a.mu.Unlock()
+
+        err := conn.ReadJSON(&msg)
         if err != nil {
-            log.Printf("Conexion cerrada o error: %v", err)
             a.mu.Lock()
             a.conn = nil
+            a.isJoined = false
             a.mu.Unlock()
-            // Notificar al frontend la desconexion
-            runtime.EventsEmit(a.ctx, "room_disconnected", "Conexion perdida con el servidor")
+            runtime.EventsEmit(a.ctx, "room_disconnected", "Conexion perdida")
             break
         }
 
-        // Si es una actualizacion del portapapeles, emitir evento al frontend
         if msg.Type == "UPDATE" {
-            log.Printf("Nueva actualizacion recibida de %s", msg.Sender)
+            // Actualizar localmente SIN disparar el Watcher (evitar bucles)
+            clipboard.Write(clipboard.FmtText, []byte(msg.Payload))
             runtime.EventsEmit(a.ctx, "clipboard_update", msg.Payload)
         }
     }
 }
 
-// Disconnect cierra la conexion activa con el servidor.
+// Disconnect limpia la sesion activa.
 func (a *App) Disconnect() {
     a.mu.Lock()
     defer a.mu.Unlock()
@@ -116,4 +153,5 @@ func (a *App) Disconnect() {
         a.conn.Close()
         a.conn = nil
     }
+    a.isJoined = false
 }
